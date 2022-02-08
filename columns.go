@@ -1,4 +1,4 @@
-package xlsxwrite
+package xlsxwriter
 
 var columns = []string{
 	"A",

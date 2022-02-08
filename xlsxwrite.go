@@ -1,4 +1,4 @@
-package xlsxwrite
+package xlsxwriter
 
 import (
 	"archive/zip"

@@ -1,4 +1,4 @@
-module github.com/mzimmerman/xlsxwrite
+module github.com/mzimmerman/xlsxwriter
 
 go 1.17
 
