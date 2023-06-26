@@ -3,11 +3,9 @@ package xlsxwriter
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
-	"runtime"
 	"sync"
 
 	"github.com/klauspost/compress/flate"
@@ -72,99 +70,6 @@ func putBuf(buf *bytes.Buffer) {
 	bufPool.Put(buf)
 }
 
-// WriteChan will write all data sent in the channel until closed or error, reading all data from channel
-// Will return an error channel, closed when done, returning one error otherwise
-func (xw *XLSXWriter) WriteChan(ctx context.Context, data chan []string) error {
-	ctx, cancelFunc := context.WithCancel(ctx)
-	defer cancelFunc()
-	inChan := make(chan line)
-	go func() {
-		defer close(inChan)
-		count := xw.lineNum
-		for l := range data {
-			select {
-			case inChan <- line{
-				idx:  count,
-				data: l,
-			}:
-				count++
-			case <-ctx.Done():
-				for range data {
-					// do nothing, just read them all so sending channel can quit without worrying about it
-				}
-				return
-			}
-		}
-	}()
-	outChan := make(chan line)
-	var wg sync.WaitGroup
-	wg.Add(runtime.NumCPU())
-	go func() {
-		wg.Wait()
-		close(outChan)
-	}()
-	for x := 0; x < runtime.NumCPU(); x++ {
-		go func() {
-			defer wg.Done()
-			for l := range inChan {
-				l.buf = getBuf()
-				writeLine(l.buf, l.idx, l.data)
-				select {
-				case <-ctx.Done():
-					return
-				case outChan <- l:
-				}
-			}
-		}()
-	}
-	curLine := xw.lineNum
-	queuedLines := []line{}
-	for l := range outChan {
-		if l.idx == curLine {
-			_, err := xw.sheet.Write(l.buf.Bytes())
-			if err != nil {
-				return err
-			}
-			putBuf(l.buf)
-			curLine++
-			// we processed "this" one, now see if we have another ready
-		Again:
-			for {
-				for x := range queuedLines {
-					if queuedLines[x].idx == curLine {
-						_, err = xw.sheet.Write(queuedLines[x].buf.Bytes())
-						if err != nil {
-							return err
-						}
-						putBuf(queuedLines[x].buf)
-						curLine++
-						queuedLines[x] = queuedLines[len(queuedLines)-1]
-						queuedLines = queuedLines[:len(queuedLines)-1]
-						continue Again
-					}
-				}
-				break
-			}
-		} else {
-			queuedLines = append(queuedLines, l)
-		}
-	}
-	xw.lineNum = curLine
-	return nil
-}
-
-func (xw *XLSXWriter) WriteLines(data [][]string) error {
-	ctx := context.Background()
-	inChan := make(chan []string)
-	go func() {
-		defer close(inChan)
-		for x := range data {
-			inChan <- data[x]
-		}
-	}()
-	return xw.WriteChan(ctx, inChan)
-}
-
 type line struct {
 	idx  int
 	data []string
@@ -180,6 +85,9 @@ func (xw *XLSXWriter) WriteLine(data []string) error {
 }
 
 func writeLine(w io.Writer, lineNum int, data []string) error {
+	if len(data) > 16383 {
+		return fmt.Errorf("Excel only supports 16383 columns, but this data has %d", len(data))
+	}
 	_, err := fmt.Fprintf(w, `<row r="%d">`, lineNum)
 	if err != nil {
 		return err
